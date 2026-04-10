@@ -15,7 +15,7 @@ FRACTION="0.5"
 COMPRESSION_INTERVAL="4"
 MODEL_KWARGS="{'attn_implementation': 'eager'}"
 
-PRESSES=("cam_knorm" "decoding_knorm" "cam_streaming_llm" "decoding_streaming_llm")
+PRESSES=("cam_knorm")
 
 # Create results directory if needed
 mkdir -p "${RESULTS_DIR}"
