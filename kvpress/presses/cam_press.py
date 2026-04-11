@@ -138,23 +138,23 @@ class CAMPress(DecodingPress):
 
         bsz, num_key_value_heads, seq_len, head_dim = keys.shape
 
-        evict_indices = scores[:, 0, :].topk(n_to_evict, dim=-1, largest=False).indices
+        mean_scores = scores.mean(dim=1)  # [bsz, seq_len] — aggregate across KV heads
+
+        evict_indices = mean_scores.topk(n_to_evict, dim=-1, largest=False).indices
         evict_indices = torch.sort(evict_indices, dim=-1).values
 
-        evict_scores = scores[:, 0, :].gather(-1, evict_indices)
+        evict_scores = mean_scores.gather(-1, evict_indices)
         # Flip so later sequence positions come first; stable sort preserves this order for ties
         k = self.layer_step_counts[layer_idx]
         order = evict_scores.flip(-1).argsort(dim=-1, descending=True, stable=True)[:, :k]
         merge_indices = evict_indices.gather(-1, n_to_evict - 1 - order)
         merge_indices = torch.sort(merge_indices, dim=-1).values
 
-        kept_indices = scores[:, 0, :].topk(self.target_size, dim=-1).indices
+        kept_indices = mean_scores.topk(self.target_size, dim=-1).indices
         kept_indices = torch.sort(kept_indices, dim=-1).values
 
         n_to_merge = merge_indices.shape[1]
 
-        base_idx_first = torch.searchsorted(kept_indices, merge_indices[:, 0:1], right=True)
-        target_starts_old = torch.arange(n_to_merge, device=kept_indices.device).unsqueeze(0) + base_idx_first
         target_starts = torch.searchsorted(kept_indices, merge_indices, right=True)
 
         # 2. Build target window indices: [bsz, n_to_merge, merge_budget]
@@ -167,14 +167,12 @@ class CAMPress(DecodingPress):
         # 3. Actual budget per merge token
         actual_budget = valid_mask.sum(dim=-1)
 
-        # 4. Window mean via cumsum (from target_start to min(target_start + merge_budget, seq_len))
-        attn_cumsum = torch.nn.functional.pad(attentions.cumsum(dim=-1), (1, 0))
-        start_sum = attn_cumsum.gather(2, target_starts.unsqueeze(1).expand(-1, num_key_value_heads, -1))
-        window_end = (target_starts + self.merge_budget).clamp(max=seq_len)
-        end_sum = attn_cumsum.gather(2, window_end.unsqueeze(1).expand(-1, num_key_value_heads, -1))
-        window_sum = end_sum - start_sum
-        window_len = (window_end - target_starts).unsqueeze(1)
-        mean_attn = window_sum / window_len
+        # 4 Window mean: gather attentions at sequence positions in target_positions
+        window_attns = attentions.gather(
+            2, target_positions.view(bsz, -1).unsqueeze(1).expand(-1, num_key_value_heads, -1)
+        ).view(bsz, num_key_value_heads, n_to_merge, self.merge_budget)
+        window_attns = window_attns * valid_mask.view(bsz, 1, n_to_merge, self.merge_budget)
+        mean_attn = window_attns.sum(dim=-1) / actual_budget.clamp(min=1).unsqueeze(1)
 
         # 5. Merge probability
         merge_token_attn = attentions.gather(2, merge_indices.unsqueeze(1).expand(-1, num_key_value_heads, -1))
