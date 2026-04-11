@@ -12,7 +12,7 @@ DATA_DIR="4096"
 MODEL="Qwen/Qwen3-8B"
 LOG_LEVEL="DEBUG"
 FRACTION="0.5"
-COMPRESSION_INTERVAL="4"
+COMPRESSION_INTERVAL="8"
 MODEL_KWARGS="{'attn_implementation': 'eager'}"
 
 PRESSES=("cam_knorm")
